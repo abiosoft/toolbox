@@ -214,16 +214,7 @@ configure_working_container()
 (
     working_container_name="$1"
     kcm_ccache_configuration="$2"
-    podman_create_supports_dns_none_no_hosts="$3"
-
-    buildah_unshare_supports_sh_c=false
-
-    echo "$base_toolbox_command: checking if 'buildah unshare' supports sh -c" >&3
-
-    if $prefix_sudo buildah unshare sh -c 'echo "hello world"' >/dev/null 2>&3; then
-        echo "$base_toolbox_command: 'buildah unshare' supports sh -c" >&3
-        buildah_unshare_supports_sh_c=true
-    fi
+    working_container_use_host_monitor="$3"
 
     if [ "$(readlink /home)" = var/home ] ; then
         need_home_link=true
@@ -289,28 +280,30 @@ configure_working_container()
         return 1
     fi
 
-    if $buildah_unshare_supports_sh_c && $podman_create_supports_dns_none_no_hosts; then
+    if $working_container_use_host_monitor; then
+        # shellcheck disable=1004
         if ! $prefix_sudo buildah unshare \
                      sh -c 'working_container_root=$(buildah mount "$1") \
                                     && cd "$working_container_root/etc" \
                                     && unlink hosts \
-                                    && ln --symbolic /run/host/etc/hosts hosts \
+                                    && ln --symbolic /run/host/monitor/hosts hosts \
                                     && buildah umount "$1"' \
                            "/bin/sh" \
                            "$working_container_name" >/dev/null 2>&3; then
-            echo "$base_toolbox_command: failed to redirect /etc/hosts to /run/host/etc/hosts" >&2
+            echo "$base_toolbox_command: failed to redirect /etc/hosts to /run/host/monitor/hosts" >&2
             return 1
         fi
 
+        # shellcheck disable=1004
         if ! $prefix_sudo buildah unshare \
                      sh -c 'working_container_root=$(buildah mount "$1") \
                                     && cd "$working_container_root/etc" \
                                     && unlink resolv.conf \
-                                    && ln --symbolic /run/host/etc/resolv.conf resolv.conf \
+                                    && ln --symbolic /run/host/monitor/resolv.conf resolv.conf \
                                     && buildah umount "$1"' \
                            "/bin/sh" \
                            "$working_container_name" >/dev/null 2>&3; then
-            echo "$base_toolbox_command: failed to redirect /etc/resolv.conf to /run/host/etc/resolv.conf" >&2
+            echo "$base_toolbox_command: failed to redirect /etc/resolv.conf to /run/host/monitor/resolv.conf" >&2
             return 1
         fi
     fi
@@ -523,6 +516,7 @@ pull_base_toolbox_image()
 
 create()
 (
+    buildah_unshare_supports_sh_c=false
     dbus_system_bus_address="unix:path=/var/run/dbus/system_bus_socket"
     dns_none=""
     kcm_ccache_configuration=""
@@ -532,6 +526,27 @@ create()
     podman_create_supports_dns_none_no_hosts=false
     tmpfs_size=$((64 * 1024 * 1024)) # 64 MiB
     working_container_name="toolbox-working-container-$(uuidgen --time)"
+    working_container_use_host_monitor=false
+
+    echo "$base_toolbox_command: checking if 'buildah unshare' supports sh -c" >&3
+
+    if $prefix_sudo buildah unshare sh -c 'echo "hello world"' >/dev/null 2>&3; then
+        echo "$base_toolbox_command: 'buildah unshare' supports sh -c" >&3
+        buildah_unshare_supports_sh_c=true
+    fi
+
+    echo "$base_toolbox_command: checking if 'podman create' supports --dns=none and --no-hosts" >&3
+
+    if $prefix_sudo podman create --help 2>&3 | grep "hosts" >/dev/null 2>&3; then
+        echo "$base_toolbox_command: 'podman create' supports --dns=none and --no-hosts" >&3
+        podman_create_supports_dns_none_no_hosts=true
+    fi
+
+    if $buildah_unshare_supports_sh_c && $podman_create_supports_dns_none_no_hosts; then
+        working_container_use_host_monitor=true
+        dns_none="--dns none"
+        no_hosts="--no-hosts"
+    fi
 
     # shellcheck disable=SC2153
     if [ "$DBUS_SYSTEM_BUS_ADDRESS" != "" ]; then
@@ -570,15 +585,6 @@ create()
         kcm_ccache_configuration="/etc/krb5.conf.d/kcm_default_ccache"
         kcm_socket=${kcm_socket_listen%" (Stream)"}
         kcm_socket_bind="--volume $kcm_socket:$kcm_socket"
-    fi
-
-    echo "$base_toolbox_command: checking if 'podman create' supports --dns=none and --no-hosts" >&3
-
-    if $prefix_sudo podman create --help 2>&3 | grep "hosts" >/dev/null 2>&3; then
-        echo "$base_toolbox_command: 'podman create' supports --dns=none and --no-hosts" >&3
-        podman_create_supports_dns_none_no_hosts=true
-        dns_none="--dns none"
-        no_hosts="--no-hosts"
     fi
 
     echo "$base_toolbox_command: checking if image $toolbox_image already exists" >&3
@@ -642,7 +648,7 @@ create()
         configure_working_container \
                 "$working_container_name" \
                 "$kcm_ccache_configuration" \
-                "$podman_create_supports_dns_none_no_hosts"
+                "$working_container_use_host_monitor"
         ret_val=$?
 
         if [ "$spinner_directory" != "" ]; then
@@ -732,7 +738,7 @@ create()
             --volume "$HOME":"$HOME":rslave \
             --volume "$XDG_RUNTIME_DIR":"$XDG_RUNTIME_DIR" \
             --volume "$dbus_system_bus_path":"$dbus_system_bus_path" \
-            --volume /etc:/run/host/etc \
+            --volume /run/user/1000/.flatpak-helper/monitor:/run/host/monitor \
             --volume /dev/bus:/dev/bus \
             --volume /dev/dri:/dev/dri \
             --volume /dev/fuse:/dev/fuse \
