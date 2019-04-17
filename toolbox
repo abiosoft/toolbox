@@ -719,10 +719,17 @@ create()
         spinner_directory=""
     fi
 
+
+
+    # prepare directories
+    mkdir -p $HOME/shared
+    mkdir -p $HOME/projects
+    mkdir -p $HOME/boxes/$toolbox_container
+
     # shellcheck disable=SC2086
     $prefix_sudo podman create \
             --group-add wheel \
-            --hostname toolbox \
+            --hostname $toolbox_container \
             --name $toolbox_container \
             --network host \
             --pid host \
@@ -733,7 +740,9 @@ create()
             --uidmap 0:1:"$user_id_real" \
             --uidmap "$uid_plus_one":"$uid_plus_one":"$max_minus_uid" \
             $kcm_socket_bind \
-            --volume "$HOME":"$HOME":rslave \
+            --volume "$HOME/shared":"$HOME/shared":rslave \
+            --volume "$HOME/projects":"$HOME/projects":rslave \
+            --volume "$HOME/boxes/$toolbox_container":"$HOME/boxes/$toolbox_container":rslave \
             --volume "$XDG_RUNTIME_DIR":"$XDG_RUNTIME_DIR" \
             --volume "$dbus_system_bus_path":"$dbus_system_bus_path" \
             --volume /dev/bus:/dev/bus \
@@ -819,7 +828,7 @@ enter()
             "$toolbox_container" \
             capsh --caps="" -- -c 'cd "$1"; export PS1="$2"; shift 2; exec "$@"' \
                     /bin/sh \
-                    "$PWD" \
+                    "$HOME" \
                     "$toolbox_prompt" \
                     "$shell_to_exec" -l 2>&3
 )
